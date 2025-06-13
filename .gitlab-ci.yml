@@ -1,0 +1,167 @@
+stages:
+  - prepare
+  - build
+
+include:
+  - project: homelab/gitlab-ci-templates
+    ref: main
+    file: k8s/pipelines/feature/git-tags.yml
+
+variables:
+  # ------------------------------ [1] prepare参数 ------------------------------
+  # TP_PREPARE_SCRIPT_REF: feat/1.6  # 可选：指定使用哪个分支的脚本，如果未指定，将尝试获取最新的tag，如果没有tag则使用main
+  # TP_TAG_NAME: 指定要创建的标签名称, 如果未指定, 将自动计算下一个版本号
+
+  # -------------------------------------------------------------------------
+  # 配置 proxy, 加速 docker pull
+  http_proxy: $X9X_HTTP_PROXY
+  https_proxy: $X9X_HTTPS_PROXY
+  no_proxy: $X9X_NO_PROXY
+  PLATFORMS: "linux/amd64,linux/arm64"
+
+workflow:
+  rules:
+    # Allow web-triggered pipelines
+    - if: $CI_PIPELINE_SOURCE == "web"
+    # Allow scheduled pipelines
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    # Allow tag pipelines
+    - if: $CI_COMMIT_TAG
+    # Allow main branch pipelines
+    - if: $CI_COMMIT_BRANCH == "main"
+    # Default policy
+    - when: never
+
+# Detect which Dockerfiles have changed
+detect-changes:
+  stage: build
+  image: registry.gitlab.com/gitlab-ci-utils/curl-jq:3.2.0
+  tags:
+    - k8s
+  artifacts:
+    # 记录下哪些目录下的 Dockerfile 发生了变更
+    paths:
+      - changed_dirs.json
+  script:
+    - |
+      if [ -n "$SPECIFIC_DOCKERFILE" ]; then
+        # If a specific Dockerfile directory is provided, use it
+        DIRS_JSON=$(echo "[\"$SPECIFIC_DOCKERFILE\"]" | jq -c .)
+      else
+        # For scheduled runs or manual runs without specific directory
+        # Get list of directories containing Dockerfiles
+        if [ "$CI_PIPELINE_SOURCE" == "schedule" ]; then
+          # For scheduled runs, check changes since last commit
+          git fetch --depth=2 origin
+          LAST_COMMIT=$(git rev-parse HEAD)
+          PREVIOUS_COMMIT=$(git rev-parse HEAD~1 || echo "")
+
+          echo "Last commit: $LAST_COMMIT"
+          echo "Previous commit: $PREVIOUS_COMMIT"
+
+          if [ -n "$PREVIOUS_COMMIT" ]; then
+            CHANGED_FILES=$(git diff --name-only $PREVIOUS_COMMIT $LAST_COMMIT)
+          else
+            # If there's no previous commit, consider all Dockerfiles
+            CHANGED_FILES=$(find . -name "Dockerfile" | sed 's|/Dockerfile$||' | sed 's|^./||')
+          fi
+
+          echo "Changed files: $CHANGED_FILES"
+        else
+          # For manual runs without specific directory, check all Dockerfiles
+          CHANGED_FILES=$(find . -name "Dockerfile" | sed 's|/Dockerfile$||' | sed 's|^./||')
+          echo "Found Dockerfiles: $CHANGED_FILES"
+        fi
+
+        # Extract directories with changed Dockerfiles
+        DIRS=()
+        for FILE in $CHANGED_FILES; do
+          # For manual runs, the find command returns the directory name directly
+          if [[ "$CI_PIPELINE_SOURCE" != "schedule" && "$FILE" != *"/"* ]]; then
+            # This is a directory name from find command
+            echo "Adding directory directly: $FILE"
+            DIRS+=("$FILE")
+            continue
+          fi
+
+          # For scheduled runs or if the file path contains a slash
+          DIR=$(dirname "$FILE")
+          if [[ "$FILE" == *Dockerfile || -f "$DIR/Dockerfile" ]]; then
+            # If the file is a Dockerfile or in a directory with a Dockerfile
+            if [[ "$DIR" == "." ]]; then
+              # Handle root Dockerfile
+              DIRS+=(".")
+            else
+              # Handle Dockerfile in subdirectory
+              NORMALIZED_DIR=$(echo "$DIR" | sed 's|^\./||')
+              DIRS+=("$NORMALIZED_DIR")
+            fi
+          fi
+        done
+
+        # Print the DIRS array for debugging
+        echo "Directories before conversion: ${DIRS[*]}"
+
+        # Remove duplicates and convert to JSON array
+        DIRS_JSON=$(printf '%s\n' "${DIRS[@]}" | sort -u | jq -R . | jq -s -c .)
+      fi
+
+      echo "Directories with changed Dockerfiles: $DIRS_JSON"
+      echo "$DIRS_JSON" > changed_dirs.json
+
+# Build and push Docker images for each changed Dockerfile
+build-push:
+  stage: build
+  extends: .base_docker_dind
+  image: xooooooooox/docker:27.5.1
+  tags:
+    - k8s
+  needs:
+    - detect-changes
+  script:
+    - |
+      # Check if there are any changed directories
+      DIRS_JSON=$(cat changed_dirs.json)
+      if [ "$DIRS_JSON" == "[]" ] || [ -z "$DIRS_JSON" ]; then
+        echo "No Dockerfile changes detected, skipping build"
+        exit 0
+      fi
+
+      # Process each directory with changed Dockerfile
+      for DIR in $(echo "$DIRS_JSON" | jq -r '.[]'); do
+        echo "Processing Dockerfile in directory: $DIR"
+
+        # Extract image name from directory
+        if [ "$DIR" == "." ]; then
+          IMAGE_NAME="base"
+        else
+          IMAGE_NAME=$(basename "$DIR")
+        fi
+
+        echo "Image name: $IMAGE_NAME"
+
+        # Extract version from Dockerfile
+        DOCKERFILE="$DIR/Dockerfile"
+        if [ -f "$DOCKERFILE" ]; then
+          # Extract version from OCI style label in Dockerfile
+          VERSION=$(grep -E "org.opencontainers.image.version=" "$DOCKERFILE" | sed 's/.*org.opencontainers.image.version="\([^"]*\)".*/\1/')
+          if [ -n "$VERSION" ]; then
+            echo "Found version: $VERSION"
+          else
+            echo "No version label found in Dockerfile, using date as fallback"
+            VERSION=$(date +'%Y%m%d')
+          fi
+        else
+          echo "Dockerfile not found, using date as fallback"
+          VERSION=$(date +'%Y%m%d')
+        fi
+
+        # Login to DockerHub
+        echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+        # Login to Harbor Registry
+        printf '%s' "$PRIVATE_REGISTRY_PASSWORD" | docker login -u "$PRIVATE_REGISTRY_USERNAME" --password-stdin "$PRIVATE_REGISTRY"
+
+        # Build and push Docker image to both DockerHub and Harbor Registry
+        chmod +x ./build-push.sh
+        ./build-push.sh -d "$DIR" -t "$DOCKERHUB_USERNAME/$IMAGE_NAME:latest,$DOCKERHUB_USERNAME/$IMAGE_NAME:$VERSION,$PRIVATE_REGISTRY/x9x/$IMAGE_NAME:latest,$PRIVATE_REGISTRY/x9x/$IMAGE_NAME:$VERSION" -p "$PLATFORMS"
+      done
