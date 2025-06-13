@@ -1,6 +1,28 @@
 # Dockerfiles
 
+[toc]
+
+---
+
 This repository contains Dockerfiles for various base images.
+
+## Available Images
+
+### Alpine
+
+- **Base Image**: `alpine:3.21.3`
+- **Description**: Enhanced Alpine Linux image with additional tools
+- **Included Tools**: bash, bind-tools, busybox-extras, ca-certificates, curl, jq, libc6-compat, tzdata, util-linux, wget, yq
+- **Default Timezone**: Asia/Shanghai
+- **Default Command**: `/bin/bash`
+
+### Docker
+
+- **Base Image**: `docker:27.5.1`
+- **Description**: Enhanced Docker image with additional tools
+- **Included Tools**: bash, bind-tools, busybox-extras, ca-certificates, curl, jq, libc6-compat, tzdata, util-linux, wget, yq
+- **Default Timezone**: Asia/Shanghai
+- **Use Case**: Ideal for Docker-in-Docker scenarios
 
 ## CI/CD Workflows
 
@@ -15,23 +37,23 @@ This repository includes CI/CD workflows for both GitHub Actions and GitLab CI t
 - Builds multi-platform images (AMD64 and ARM64 by default)
 - Pushes images with both `latest` and date-based tags (format: `yyyyMMdd`)
 
-## GitHub Actions Workflow
+### GitHub Actions Workflow
 
-### Required Secrets
+#### Required Secrets
 
 To use the GitHub Actions workflow, you need to set up the following secrets in your GitHub repository:
 
 - `DOCKERHUB_USERNAME` - Your DockerHub username
 - `DOCKERHUB_TOKEN` - Your DockerHub access token (not your password)
 
-### How to Set Up Secrets in GitHub
+#### How to Set Up Secrets in GitHub
 
 1. Go to your GitHub repository
 2. Click on "Settings" > "Secrets and variables" > "Actions"
 3. Click "New repository secret"
 4. Add the required secrets
 
-### Manual Triggering in GitHub
+#### Manual Triggering in GitHub
 
 To manually trigger the GitHub workflow:
 
@@ -41,24 +63,27 @@ To manually trigger the GitHub workflow:
 4. Optionally specify a specific Dockerfile directory to build
 5. Click "Run workflow"
 
-## GitLab CI Workflow
+### GitLab CI Workflow
 
-### Required Variables
+#### Required Variables
 
 To use the GitLab CI workflow, you need to set up the following CI/CD variables in your GitLab project:
 
 - `DOCKERHUB_USERNAME` - Your DockerHub username
 - `DOCKERHUB_TOKEN` - Your DockerHub access token (not your password)
+- `PRIVATE_REGISTRY` - URL of your private registry (for Harbor)
+- `PRIVATE_REGISTRY_USERNAME` - Your private registry username
+- `PRIVATE_REGISTRY_PASSWORD` - Your private registry password
 
-### How to Set Up Variables in GitLab
+#### How to Set Up Variables in GitLab
 
 1. Go to your GitLab project
 2. Click on "Settings" > "CI/CD"
 3. Expand the "Variables" section
 4. Click "Add variable"
-5. Add the required variables (mark DOCKERHUB_TOKEN as "Masked" for security)
+5. Add the required variables (mark DOCKERHUB_TOKEN and PRIVATE_REGISTRY_PASSWORD as "Masked" for security)
 
-### Schedule Setup in GitLab
+#### Schedule Setup in GitLab
 
 To set up the daily schedule:
 
@@ -69,7 +94,7 @@ To set up the daily schedule:
 5. Set "Timezone" to "UTC"
 6. Save the schedule
 
-### Manual Triggering in GitLab
+#### Manual Triggering in GitLab
 
 To manually trigger the GitLab CI pipeline:
 
